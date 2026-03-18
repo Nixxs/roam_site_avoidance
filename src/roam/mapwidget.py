@@ -12,7 +12,7 @@ from qgis.PyQt.QtWidgets import QActionGroup, QFrame, QWidget, QSizePolicy, \
     QAction, QMainWindow, QGraphicsItem, QToolButton, QLabel, QToolBar
 from qgis.core import QgsMapLayer, Qgis, QgsRectangle, QgsProject, QgsApplication, \
     QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsPoint, QgsCsException, QgsDistanceArea, QgsWkbTypes, \
-    QgsGeometry
+    QgsGeometry, QgsSpatialIndex, QgsFeatureRequest, QgsUnitTypes
 from qgis.gui import QgsMapToolZoom, QgsRubberBand, QgsScaleComboBox, \
     QgsLayerTreeMapCanvasBridge, \
     QgsMapCanvasSnappingUtils, QgsMapToolPan
@@ -333,6 +333,7 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
         self.gps = None
         self.gpslogging = None
         self.selectionbands = defaultdict(partial(QgsRubberBand, self.canvas))
+        self._spatial_indexes = {}
 
         self.bridge = QgsLayerTreeMapCanvasBridge(QgsProject.instance().layerTreeRoot(), self.canvas)
         self.bridge.setAutoSetupOnFirstLayer(False)
@@ -467,6 +468,19 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
         self.actionShowCustom.toggled.connect(self._toggle_custom_overlay)
         self.projecttoolbar.addAction(self.actionShowCustom)
 
+        # ---- GPS overlay (top-right) ----
+        self.gpsOverlay = QLabel(self.canvas)
+        self.gpsOverlay.setStyleSheet(
+            "background-color: rgba(0,0,0,120); color: white; padding: 4px 8px; border-radius: 4px;"
+        )
+        self.gpsOverlay.setVisible(False)
+
+        self.actionShowGPS = QAction("GPS XY", self)
+        self.actionShowGPS.setCheckable(True)
+        self.actionShowGPS.setChecked(True)
+        self.actionShowGPS.toggled.connect(self._toggle_gps_overlay)
+        self.projecttoolbar.addAction(self.actionShowGPS)
+
     def clear_plugins(self) -> None:
         """
         Clear all the plugin added toolbars from the map interface.
@@ -553,6 +567,7 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
         if not fixed:
             self.gpslabel.setText("GPS: Acquiring fix")
             self.gpslabelposition.setText("")
+            self.gpsOverlay.setVisible(False)
 
     quality_mappings = {
         0: "invalid",
@@ -592,10 +607,24 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
                                                      z=gpsinfo.elevation,
                                                      places=places))
 
+        # Update the GPS overlay with current XY if enabled
+        if self.actionShowGPS.isChecked():
+            overlay_text = f"X: {position.x():.{places}f}    Y: {position.y():.{places}f}"
+
+            # Find nearest across all visible vector layers
+            dist_all, nearest_layer = self._nearest_distance_across_layers(position)
+            if dist_all is not None and nearest_layer is not None:
+                overlay_text += f"    d: {dist_all:.1f} m ({nearest_layer.name()})"
+
+            self.gpsOverlay.setText(overlay_text)
+            self.gpsOverlay.setVisible(True)
+            self._position_overlays()
+
     def gps_disconnected(self):
         self.gpslabel.setText("GPS: Not Active")
         self.gpslabelposition.setText("")
         self.gpsMarker.hide()
+        self.gpsOverlay.setVisible(False)
 
     def zoom_to_feature(self, feature):
         """
@@ -648,7 +677,7 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
         self.customOverlay.setText(self._custom_text)
         if show and self._custom_text:
             self.actionShowCustom.setChecked(True)
-            self._position_custom_overlay()
+            self._position_overlays()
             self.customOverlay.setVisible(True)
         elif not self._custom_text:
             self.actionShowCustom.setChecked(False)
@@ -656,23 +685,144 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
 
     def _toggle_custom_overlay(self, checked: bool) -> None:
         if checked and self._custom_text:
-            self._position_custom_overlay()
+            self._position_overlays()
             self.customOverlay.setVisible(True)
         else:
             self.customOverlay.setVisible(False)
 
-    def _position_custom_overlay(self) -> None:
+    def _position_overlays(self) -> None:
         margin = 10
-        self.customOverlay.adjustSize()
-        w = self.customOverlay.width()
-        x = max(0, self.canvas.width() - w - margin)
+        spacing = 6
+        x_right = self.canvas.width() - margin
+
         y = margin
-        self.customOverlay.move(x, y)
+        # Order: GPS first, then custom text below it
+        for label in (self.gpsOverlay, self.customOverlay):
+            if not label.isVisible():
+                continue
+            label.adjustSize()
+            w = label.width()
+            label.move(max(0, x_right - w), y)
+            y += label.height() + spacing
+
+    def _toggle_gps_overlay(self, checked: bool) -> None:
+        if checked and self.gpsOverlay.text():
+            self.gpsOverlay.setVisible(True)
+            self._position_overlays()
+        else:
+            self.gpsOverlay.setVisible(False)
+
+    def _layer_is_visible(self, layer: QgsMapLayer) -> bool:
+        try:
+            node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+            return bool(node and node.isVisible())
+        except Exception:
+            return True
+
+    def _get_spatial_index(self, layer):
+        lid = layer.id()
+        index = self._spatial_indexes.get(lid)
+        if index is None:
+            index = QgsSpatialIndex(layer.getFeatures())
+            self._spatial_indexes[lid] = index
+            # Invalidate on edits/changes (simple approach)
+            try:
+                layer.committedFeaturesAdded.connect(lambda *_: self._spatial_indexes.pop(lid, None))
+                layer.committedFeaturesRemoved.connect(lambda *_: self._spatial_indexes.pop(lid, None))
+                layer.geometryChanged.connect(lambda *_: self._spatial_indexes.pop(lid, None))
+            except Exception:
+                pass
+        return index
+
+    def _nearest_distance_across_layers(self, position):
+        """
+        Compute the nearest distance (meters) from position to any visible vector layer's nearest feature.
+        :return: (distance_meters: float | None, layer: QgsMapLayer | None)
+        """
+        best_dist = None
+        best_layer = None
+        for layer in roam.api.utils.layers():
+            if layer.type() != QgsMapLayer.VectorLayer:
+                continue
+            if not self._layer_is_visible(layer):
+                continue
+            # Quick NN via spatial index
+            try:
+                index = self._get_spatial_index(layer)
+                nearest_ids = index.nearestNeighbor(position, 1)
+                if not nearest_ids:
+                    continue
+                fid = nearest_ids[0]
+                for f in layer.getFeatures(QgsFeatureRequest(fid)):
+                    geom = QgsGeometry(f.geometry())
+                    transform = self.canvas.mapSettings().layerTransform(layer)
+                    if transform and transform.isValid():
+                        try:
+                            geom.transform(transform)
+                        except Exception:
+                            continue
+                    d = geom.distance(QgsGeometry.fromPointXY(position))
+                    if best_dist is None or d < best_dist:
+                        best_dist = d
+                        best_layer = layer
+            except Exception:
+                continue
+
+        if best_dist is None:
+            return None, None
+
+        try:
+            factor = QgsUnitTypes.fromUnitToUnitFactor(self.canvas.mapUnits(), QgsUnitTypes.DistanceMeters)
+        except Exception:
+            try:
+                factor = Qgis.fromUnitToUnitFactor(self.canvas.mapUnits(), Qgis.Meters)
+            except Exception:
+                factor = 1.0
+        return best_dist * factor, best_layer
+
+    def _nearest_distance_to_layer(self, position, layer):
+        """
+        Compute distance (in meters) from map position (map CRS) to the nearest feature of the given layer.
+        This is a simple per-feature scan; for large layers a spatial index would be better.
+        :param position: QgsPointXY in map/canvas CRS.
+        :param layer: QgsVectorLayer to measure against.
+        :return: (distance_meters: float | None, nearest_feature)
+        """
+        try:
+            transform = self.canvas.mapSettings().layerTransform(layer)
+        except Exception:
+            transform = None
+
+        point_geom = QgsGeometry.fromPointXY(position)
+        mindist = None
+        nearest = None
+        for f in layer.getFeatures():
+            geom = QgsGeometry(f.geometry())
+            if transform and transform.isValid():
+                try:
+                    geom.transform(transform)
+                except Exception:
+                    continue
+            d = geom.distance(point_geom)
+            if mindist is None or d < mindist:
+                mindist = d
+                nearest = f
+
+        if mindist is None:
+            return None, None
+
+        try:
+            factor = QgsUnitTypes.fromUnitToUnitFactor(self.canvas.mapUnits(), QgsUnitTypes.DistanceMeters)
+        except Exception:
+            try:
+                factor = Qgis.fromUnitToUnitFactor(self.canvas.mapUnits(), Qgis.Meters)
+            except Exception:
+                factor = 1.0
+        return mindist * factor, nearest
 
     def eventFilter(self, obj, event):
         if obj is self.canvas and event.type() == QEvent.Resize:
-            if self.customOverlay.isVisible():
-                self._position_custom_overlay()
+            self._position_overlays()
         return super(MapWidget, self).eventFilter(obj, event)
 
     @property
@@ -843,6 +993,10 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
         if zoomtolocation:
             self.canvas.zoomScale(1000)
             self.zoom_to_location(postion)
+        # Make sure overlay shows on first fix if enabled
+        if self.actionShowGPS.isChecked():
+            self.gpsOverlay.setVisible(True)
+            self._position_overlays()
 
     def zoom_to_location(self, position):
         """
