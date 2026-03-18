@@ -110,6 +110,9 @@ class MainWindow(ui_mainwindow.Ui_MainWindow, QMainWindow):
         self.testwidget = TestWidget(self)
         testpage_index = self.stackedWidget.insertWidget(-1, self.testwidget)
 
+        # When a value is submitted from TestWidget, forward to MapWidget overlay
+        self.testwidget.valueSubmitted.connect(self.canvas_page.set_custom_text)
+
         # Create action for TestWidget button
         self.actionTest = QAction(self.menutoolbar)
         self.actionTest.setIconText("Test            ".ljust(13))

@@ -4,7 +4,7 @@ from functools import partial
 
 from PyQt5.QtCore import pyqtProperty
 from qgis.PyQt.QtCore import Qt, QSize, QPropertyAnimation, QObject, QThread, \
-    QRectF, QLocale, QPointF
+    QRectF, QLocale, QPointF, QEvent
 from qgis.PyQt.QtGui import QPixmap, QCursor, QIcon, QColor, QPen, QPolygon, QFont, QFontMetrics, QBrush, \
     QPainterPath, QPainter
 from qgis.PyQt.QtSvg import QGraphicsSvgItem
@@ -36,7 +36,17 @@ class SnappingUtils(QgsMapCanvasSnappingUtils):
     def prepareIndexProgress(self, index):
         pass
 
-
+        def set_custom_text(self, text: str, other_text: str, show: bool = True) -> None:
+            """
+            Set the current custom text and optionally show it on the canvas.
+            :param text: The text to store/display.
+            :param other_text: Additional text to display.
+            :param show: If True, display immediately.
+            """
+            combined = text or ""
+            if other_text:
+                combined = f"{combined} — {other_text}" if combined else other_text
+            self._custom_text = combined
 class NorthArrow(QGraphicsSvgItem):
     def __init__(self, path, canvas, parent=None):
         super(NorthArrow, self).__init__(path, parent)
@@ -442,6 +452,21 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
             # self.scalebar = ScaleBarItem(self.canvas)
             # self.canvas.scene().addItem(self.scalebar)
 
+        # ---- Custom overlay to show arbitrary text (top-right) ----
+        self._custom_text = ""
+        self.customOverlay = QLabel(self.canvas)
+        self.customOverlay.setStyleSheet(
+            "background-color: rgba(0,0,0,120); color: white; padding: 4px 8px; border-radius: 4px;"
+        )
+        self.customOverlay.setVisible(False)
+        self.canvas.installEventFilter(self)
+
+        # Optional toolbar toggle to show/hide current custom text
+        self.actionShowCustom = QAction("Show Value", self)
+        self.actionShowCustom.setCheckable(True)
+        self.actionShowCustom.toggled.connect(self._toggle_custom_overlay)
+        self.projecttoolbar.addAction(self.actionShowCustom)
+
     def clear_plugins(self) -> None:
         """
         Clear all the plugin added toolbars from the map interface.
@@ -610,6 +635,45 @@ class MapWidget(Ui_CanvasWidget, QMainWindow):
         :return:
         """
         self.canvas.zoomScale(1.0 / self.scalewidget.scale())
+
+    # ----- Custom text overlay API -----
+    def set_custom_text(self, text: str, other_text: str, show: bool = True) -> None:
+        """
+        Set the current custom text and optionally show it on the canvas.
+        :param text: The text to store/display.
+        :param other_text: Additional text to display.
+        :param show: If True, display immediately.
+        """
+        self._custom_text = text or ""
+        self.customOverlay.setText(self._custom_text)
+        if show and self._custom_text:
+            self.actionShowCustom.setChecked(True)
+            self._position_custom_overlay()
+            self.customOverlay.setVisible(True)
+        elif not self._custom_text:
+            self.actionShowCustom.setChecked(False)
+            self.customOverlay.setVisible(False)
+
+    def _toggle_custom_overlay(self, checked: bool) -> None:
+        if checked and self._custom_text:
+            self._position_custom_overlay()
+            self.customOverlay.setVisible(True)
+        else:
+            self.customOverlay.setVisible(False)
+
+    def _position_custom_overlay(self) -> None:
+        margin = 10
+        self.customOverlay.adjustSize()
+        w = self.customOverlay.width()
+        x = max(0, self.canvas.width() - w - margin)
+        y = margin
+        self.customOverlay.move(x, y)
+
+    def eventFilter(self, obj, event):
+        if obj is self.canvas and event.type() == QEvent.Resize:
+            if self.customOverlay.isVisible():
+                self._position_custom_overlay()
+        return super(MapWidget, self).eventFilter(obj, event)
 
     @property
     def crs(self) -> QgsCoordinateReferenceSystem:
