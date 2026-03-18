@@ -5,6 +5,7 @@ from qgis.PyQt.QtCore import Qt, QDir, QSize, QUrl
 from qgis.PyQt.QtGui import QPixmap, QIcon, QDesktopServices
 from qgis.PyQt.QtWidgets import (QActionGroup, QWidget, QSizePolicy, QApplication, QAction)
 from qgis.PyQt.QtWidgets import QMainWindow
+from qgis.PyQt.QtWidgets import QPushButton
 from qgis.core import (QgsProjectBadLayerHandler,
                        QgsProject,
                        QgsMapLayer,
@@ -20,6 +21,7 @@ import roam.messagebaritems
 import roam.roam_style
 import roam.utils
 from roam.api import RoamEvents, GPS, RoamInterface, plugins
+from roam.testwidget import TestWidget
 from roam.dataentrywidget import DataEntryWidget
 from roam.gpslogging import GPSLogging
 from roam.helpviewdialog import HelpPage
@@ -103,6 +105,22 @@ class MainWindow(ui_mainwindow.Ui_MainWindow, QMainWindow):
         self.menuGroup.addAction(self.actionSettings)
         self.menuGroup.addAction(self.actionGPS)
         self.menuGroup.triggered.connect(self.updatePage)
+
+        # Add TestWidget
+        self.testwidget = TestWidget(self)
+        testpage_index = self.stackedWidget.insertWidget(-1, self.testwidget)
+
+        # Create action for TestWidget button
+        self.actionTest = QAction(self.menutoolbar)
+        self.actionTest.setIconText("Test            ".ljust(13))
+        self.actionTest.setIcon(QIcon(":/icons/test"))  # Use any icon you want
+        self.actionTest.setCheckable(True)
+        self.actionTest.setProperty('page', testpage_index)
+        self.actionTest.setVisible(False)
+
+        # Add to toolbar and menu
+        self.menutoolbar.insertAction(self.actionProject, self.actionTest)
+        self.menuGroup.addAction(self.actionTest)
 
         self.projectbuttons = []
         self.pluginactions = []
@@ -587,6 +605,8 @@ class MainWindow(ui_mainwindow.Ui_MainWindow, QMainWindow):
         self.projectbuttons = []
         self.projectbuttons.append(self.actionMap)
         self.projectbuttons.append(self.actionLegend)
+        self.projectbuttons.append(self.actionTest)
+
         for action in self.pluginactions:
             # Remove the page widget, because we make it on each load
             widget = self.stackedWidget.widget(action.property("page"))

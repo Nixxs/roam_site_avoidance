@@ -8,15 +8,29 @@
     `cd D:\Development\roam_site_avoidance`
 - run the below command to set environment up:
     `scripts\setenv.bat`
-    `scripts\setupdev.bat`
+    (this also exists if you need to run dev `scripts\setupdev.bat` but can stop it from working at the moment)
 - then set your local environment up for your QGIS install should be:
     ```
-    set PATH=C:\OSGeo4W\apps\Qt5\bin;C:\OSGeo4W\bin;C:\OSGeo4W\apps\qgis-ltr\bin;%PATH%
-    set QT_PLUGIN_PATH=C:\OSGeo4W\apps\Qt5\plugins
-    set PYTHONPATH=C:\OSGeo4W\apps\qgis-ltr
+        set PATH=C:\OSGeo4W\apps\Qt5\bin;C:\OSGeo4W\bin;C:\OSGeo4W\apps\qgis-ltr\bin;%PATH%
+        set QT_PLUGIN_PATH=C:\OSGeo4W\apps\Qt5\plugins
+        set PYTHONPATH=C:\OSGeo4W\apps\qgis-ltr
     ```
 - next from the directory run the below to install dependancies:
     `python -m pip install -r requirements.txt`
+- next build all the QT UI items:
+    ```
+    for %f in (src\roam\ui\*.ui) do python -m PyQt5.uic.pyuic "%f" -o "%~dpf%~nf.py"
+    for %f in (src\roam\editorwidgets\uifiles\*.ui) do python -m PyQt5.uic.pyuic "%f" -o "%~dpf%~nf.py"
+    for %f in (src\configmanager\ui\*.ui) do python -m PyQt5.uic.pyuic "%f" -o "%~dpf%~nf.py"
+    for %f in (src\configmanager\ui\nodewidgets\*.ui) do python -m PyQt5.uic.pyuic "%f" -o "%~dpf%~nf.py"
+    for %f in (src\configmanager\editorwidgets\uifiles\*.ui) do python -m PyQt5.uic.pyuic "%f" -o "%~dpf%~nf.py"
+    ```
+- then generate all the resources_rc:
+    ```
+    python -m PyQt5.pyrcc_main src\roam\resources.qrc -o src\roam\resources_rc.py
+    cd \src\configmanager\resources
+    python -m PyQt5.pyrcc_main resources.qrc -o resources_rc.py
+    ```
 - now run roam with either of the below:
     `python .\src\roam`
     `python .\src\configmanager`

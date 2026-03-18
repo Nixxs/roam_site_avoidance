@@ -32,6 +32,7 @@ class HideableToolbar(QToolBar):
         super(HideableToolbar, self).setToolButtonStyle(style)
 
 from roam.legendwidget import LegendWidget
+from roam.testwidget import TestWidget
 from roam.gpswidget import GPSWidget
 from roam.syncwidget import SyncWidget
 from roam.settingswidget import SettingsWidget

@@ -91,6 +91,7 @@
     <file alias="raster_50">resources/images/raster_50.png</file>
     <file alias="raster_75">resources/images/raster_75.png</file>
     <file alias="raster_100">resources/images/raster_100.png</file>
+    <file alias="test">resources/images/test.svg</file>
   </qresource>
   <qresource prefix="branding">
     <file alias="config">resources/branding/config.ico</file>
